@@ -195,6 +195,10 @@ The plot will show:
 - A 95% confidence interval ribbon
 - An annotation box with IC₅₀, slope, and R²
 
+# Example output
+
+![4PL dose response](dose_response_4PL_251203 - eal_abs4.png)
+
 ## Reproducibility and Extensions
 You can extend this script by:
 
