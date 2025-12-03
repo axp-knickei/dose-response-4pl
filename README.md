@@ -197,7 +197,7 @@ The plot will show:
 
 # Example output
 
-![4PL dose response](dose_response_4PL_251203 - eal_abs4.png)
+![4PL dose response](dose_response.png)
 
 ## Reproducibility and Extensions
 You can extend this script by:
