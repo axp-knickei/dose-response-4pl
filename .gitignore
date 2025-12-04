@@ -1,0 +1,11 @@
+# Ignore Python cache
+__pycache__/
+
+# Ignore virtual env
+.venv/
+
+# Ignore environment files
+.env
+
+# Ignore SCCR related files
+SCCR/
