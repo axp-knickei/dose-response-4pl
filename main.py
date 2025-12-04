@@ -8,15 +8,17 @@ Dose–response analysis with 4-parameter logistic (4PL) model.
 - Computes IC50 (relative parameter and absolute Y=50%)
 - Estimates 95% confidence band using the delta method
 - Plots curve, confidence band, and raw data points
+- (New) Exports summary table of uM, log[uM], and replicate viabilities
 """
 
 from __future__ import annotations
 
 import re
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
-import argparse
 from textwrap import dedent
+from typing import Optional, Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -32,37 +34,7 @@ def write_templates(
 ) -> None:
     """
     Create example template CSV files for absorbance and metadata.
-
-    Formats:
-
-    abs_template.csv
-    ----------------
-    - ';'-separated
-    - Rows: A–H (or however many you need)
-    - Columns: 1–12 (or plate columns)
-    - Values: numeric absorbance measurements
-
-    Example:
-
-        ;1;2;3;4
-        A;0.123;0.115;0.110;0.098
-        B;0.130;0.120;0.112;0.100
-
-    meta_template.csv
-    -----------------
-    - Same plate layout as abs_template.csv
-    - Values: strings describing condition
-      * 'Blank'       -> blank wells
-      * 'NegControl'  -> negative controls
-      * '<dose>uM'    -> numeric doses, e.g. '0uM', '1uM', '10uM'
-
-    Example:
-
-        ;1;2;3;4
-        A;Blank;Blank;NegControl;NegControl
-        B;0uM;1uM;10uM;100uM
     """
-
     abs_content = dedent(
         """\
         ;1;2;3;4;5;6;7;8;9;10;11;12
@@ -121,6 +93,13 @@ def parse_args() -> argparse.Namespace:
         help="Path to metadata CSV (e.g. meta-abs.csv)",
     )
     parser.add_argument(
+        "--summary",
+        dest="summary_file",
+        type=Path,
+        required=False,
+        help="Path to save the converted summary CSV (uM, log, viabilities).",
+    )
+    parser.add_argument(
         "--make-templates",
         action="store_true",
         help="Create example abs_template.csv and meta_template.csv, then exit.",
@@ -157,7 +136,7 @@ def parse_condition_type(val: object) -> Optional[float | str]:
     Parse a condition string into:
       - 'Blank' (if 'Blank' is in the string)
       - 'Control' (if 'NegControl' is in the string)
-      - float dose (supports '10uM' format OR raw numbers like '1.39')
+      - float dose (supports '10uM_Sample' format OR raw numbers)
       - None if not recognized
     """
     # Convert to string and strip whitespace/NaNs
@@ -166,19 +145,27 @@ def parse_condition_type(val: object) -> Optional[float | str]:
         return None
 
     # 1. Check for Controls
-    # Matches 'Blank', 'BlankControl0001', etc.
     if "Blank" in s:
         return "Blank"
-    # Matches 'NegControl', 'NegControl0001', etc.
     if "NegControl" in s:
         return "Control"
 
-    # 2. Check for "uM" format (Old format)
-    match = re.search(r"(\d+)uM", s)
+    # 2. Check for "uM_Sample" format (New Regex integration)
+    # Regex to find the number before 'uM' at the start of string
+    # Matches: '10uM_5FU0001', '0.014uM_Sample', etc.
+    match = re.search(r'^(\d+(\.\d+)?)uM_', s)
     if match:
-        return float(match.group(1))
+        try:
+            return float(match.group(1))
+        except ValueError:
+            pass
 
-    # 3. Check for raw numbers (New format)
+    # 3. Check for standard "uM" format (Old format, e.g. '10uM')
+    match_old = re.search(r"(\d+)uM", s)
+    if match_old:
+        return float(match_old.group(1))
+
+    # 4. Check for raw numbers (structure 2 or simple number)
     try:
         return float(s)
     except ValueError:
@@ -223,26 +210,7 @@ def calculate_confidence_interval(
 ) -> np.ndarray:
     """
     Calculate the confidence band around the fitted curve using the
-    delta method (first-order Taylor expansion).
-
-    Parameters
-    ----------
-    x_model : np.ndarray
-        X-values at which to compute the band.
-    params : iterable of float
-        Fitted 4PL parameters: (lower, upper, ic50, slope).
-    covariance : np.ndarray
-        4x4 covariance matrix from curve_fit.
-    n_obs : int
-        Number of observations used in the fit.
-    alpha : float
-        Significance level for the (1 - alpha) confidence band.
-
-    Returns
-    -------
-    np.ndarray
-        Half-width of the confidence interval at each x_model point.
-        The band is: y ± ci_band
+    delta method.
     """
     lower, upper, ic50, slope = params
     x_model = np.asarray(x_model, dtype=float)
@@ -308,8 +276,6 @@ def fit_dose_response(
     y_pred = four_param_logistic(x, *params)
     r2 = r2_score(y, y_pred)
 
-    # Absolute IC50: dose at which Y = 50% viability
-    # x = IC50 * ((Upper - Lower) / (50 - Lower) - 1)^(1/Slope)
     try:
         absolute_ic50 = ic50_fit * (
             (upper_fit - lower_fit) / (50.0 - lower_fit) - 1.0
@@ -428,23 +394,84 @@ def plot_dose_response(
 
     plt.savefig(output, dpi=300)
     print(f"Figure saved to: {output}")
-    plt.show()
+    # plt.show() # Optional: Comment out if running on headless server
 
 
 # ==========================================
-# 6. MAIN PIPELINE
+# 6. SUMMARY TABLE GENERATION (NEW)
 # ==========================================
 
-def main(abs_file: Path, meta_file: Path) -> FitResult:
+def save_summary_table(df_numeric: pd.DataFrame, output_path: Path) -> None:
+    """
+    Generate and save a summary CSV table with structure:
+    uM | log [uM] | % viability_1 | % viability_2 | ...
+
+    Parameters
+    ----------
+    df_numeric : pd.DataFrame
+        Data containing only the numeric dose rows.
+        Must have columns: 'Dose' (float) and 'Viability' (float).
+    output_path : Path
+        Destination file path.
+    """
+    print(f"Generating summary table to: {output_path}")
+
+    # Work on a copy
+    df_sum = df_numeric.copy()
+
+    # 1. Create 'uM' and 'log [uM]'
+    df_sum["uM"] = df_sum["Dose"]
+    # Handle log of 0 or negative (though fit usually filters them)
+    df_sum["log [uM]"] = df_sum["uM"].apply(
+        lambda x: np.log10(x) if x > 0 else np.nan
+    )
+
+    # 2. Assign replicate numbers within each Dose group
+    #    e.g. if Dose 10 has 3 rows, they become Rep 1, Rep 2, Rep 3
+    df_sum["Replicate_ID"] = df_sum.groupby("uM").cumcount() + 1
+    df_sum["Replicate_Col"] = "% viability_" + df_sum["Replicate_ID"].astype(str)
+
+    # 3. Pivot the table
+    #    Index: uM, log [uM]
+    #    Columns: Replicate_Col
+    #    Values: Viability
+    pivot_df = df_sum.pivot_table(
+        index=["uM", "log [uM]"],
+        columns="Replicate_Col",
+        values="Viability"
+    )
+
+    # 4. Clean up formatting
+    pivot_df = pivot_df.reset_index()
+    
+    # Sort by uM ascending
+    pivot_df = pivot_df.sort_values(by="uM")
+
+    # Flatten column index name
+    pivot_df.columns.name = None
+
+    # Save to CSV
+    pivot_df.to_csv(output_path, index=False, float_format="%.6g")
+    print("Summary table saved successfully.")
+
+
+# ==========================================
+# 7. MAIN PIPELINE
+# ==========================================
+
+def main(abs_file: Path, meta_file: Path, summary_file: Optional[Path]) -> FitResult:
     print("Loading and processing data...")
 
     raw_data = load_plate_with_headers(abs_file, "Absorbance")
     meta_data = load_plate_with_headers(meta_file, "Condition")
 
     df = pd.merge(raw_data, meta_data, on="Well")
+    
+    # Updated parsing using new Regex logic included in parse_condition_type
     df["Parsed_Value"] = df["Condition"].apply(parse_condition_type)
     df["Absorbance"] = pd.to_numeric(df["Absorbance"], errors="coerce")
 
+    # Identify blanks/controls
     mean_blank = df[df["Parsed_Value"] == "Blank"]["Absorbance"].mean()
     mean_control = df[df["Parsed_Value"] == "Control"]["Absorbance"].mean()
 
@@ -454,12 +481,12 @@ def main(abs_file: Path, meta_file: Path) -> FitResult:
     print(f"Mean blank   : {mean_blank:.4f}")
     print(f"Mean control : {mean_control:.4f}")
 
-    # Viability
+    # Viability Calculation
     df["Viability"] = (df["Absorbance"] - mean_blank) / (
         mean_control - mean_blank
     ) * 100.0
 
-    # Use only numeric doses
+    # Filter for numeric doses
     mask_numeric = df["Parsed_Value"].apply(
         lambda x: isinstance(x, (int, float, np.floating))
     )
@@ -468,6 +495,13 @@ def main(abs_file: Path, meta_file: Path) -> FitResult:
     data_for_fit["Viability"] = data_for_fit["Viability"].astype(float)
     data_for_fit = data_for_fit.dropna(subset=["Dose", "Viability"])
 
+    # ------------------------------------------
+    # NEW: Save Summary Table if requested
+    # ------------------------------------------
+    if summary_file:
+        save_summary_table(data_for_fit, summary_file)
+
+    # Proceed with Fitting and Plotting
     x_data = data_for_fit["Dose"].to_numpy()
     y_data = data_for_fit["Viability"].to_numpy()
 
@@ -495,4 +529,4 @@ if __name__ == "__main__":
             raise SystemExit(
                 "Error: --abs and --meta are required unless --make-templates is used."
             )
-        main(args.abs_file, args.meta_file)
+        main(args.abs_file, args.meta_file, args.summary_file)

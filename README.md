@@ -10,6 +10,7 @@ The script:
 - Reports **IC₅₀** (model parameter) and **absolute IC₅₀** (dose at 50% viability ~ may not be accurate)
 - Estimates a **95% confidence band** via the delta method
 - Generates a publication‑quality plot (curve, confidence band, and raw data points)
+- **(New) Exports a summary CSV table** containing uM, log[uM], and viability for all replicates
 
 ---
 
@@ -81,14 +82,18 @@ C;0uM;1uM;10uM;100uM
 D;0uM;1uM;10uM;100uM
 ```
 
-The script parses doses from the `<number>uM` pattern.
+The script parses doses from various patters, including:
+
+- Standard: `10uM` or `100uM`
+- Complex: `10uM_SampleID` or `0.014uM_5FU0001` (extracts the leading number)
+- Raw number: `10`, `0.014`, etc
 
 # 3. Run the Analysis
 
 Once you have your absorbance and metadata files, run:
 
 ```
-python main.py --abs abs.csv --meta meta-abs.csv
+python main.py --abs abs.csv --meta meta-abs.csv --summary summary_output.csv
 ```
 
 Key outputs:
@@ -106,44 +111,43 @@ Key outputs:
         - Fitted 4PL curve
         - 95% confidence band
         - Text box with IC₅₀, slope, and R²
+- Summary Table (if `--summary` is used):
+    - A CSV file containing the organized data for further analysis.
+    - Columns: `uM`, `log [uM]`, `% viability_1`, `% viability_2`, ... (pivoted by replicates)
 
 ## Implementation Details
 
 The core components are:
 
-- `load_plate_with_headers(...)`
-Reads a ;‑separated plate file into long format with Well identifiers (e.g. A1, B3).
+- `load_plate_with_headers(...)`: Reads a ;‑separated plate file into long format with Well identifiers (e.g. A1, B3).
 
-- `parse_condition_type(...)`
-Converts metadata strings into:
+- `parse_condition_type(...)`: Converts metadata strings into:
 
     - "Blank", "Control", or
     - numeric dose values (extracted from <number>uM).
+    - Support regex extraction for format like `10uM_SampleName`.
 
-- Viability calculation
-For each well:
+- Viability calculation. For each well:
 
 ```
 Viability (%) = (Absorbance - mean_blank) / (mean_control - mean_blank) * 100
 ```
 
-- `four_param_logistic(...)`
-Standard 4PL model:
+- `save_summary_table(...)`: Pivots the calculated viability data into a wide format (Dose vs Replicates) and calculate `log10(Dose)`
+
+- `four_param_logistic(...)`. Standard 4PL model:
 
 ```
 y(x) = lower + (upper - lower) / (1 + (x / IC50)^slope)
 ```
 
-- `fit_dose_response(...)`
-Uses `scipy.optimize.curve_fit` with the Levenberg–Marquardt algorithm (`method="lm"`) to estimate:
+- `fit_dose_response(...)`: Uses `scipy.optimize.curve_fit` with the Levenberg–Marquardt algorithm (`method="lm"`) to estimate:
 
     - `lower`, `upper`, `IC50`, `slope`, plus the covariance matrix.
 
-- Confidence band
-`calculate_confidence_interval(...)` uses the delta method (first‑order Taylor expansion) and the parameter covariance to compute a 95% confidence band around the fitted curve.
+- Confidence band: `calculate_confidence_interval(...)` uses the delta method (first‑order Taylor expansion) and the parameter covariance to compute a 95% confidence band around the fitted curve.
 
-- Plotting
-`plot_dose_response(...)` renders:
+- Plotting. `plot_dose_response(...)` renders:
 
     - Log‑scaled x‑axis (dose in µM)
     - Viability on y‑axis
@@ -176,12 +180,13 @@ You can inspect/edit them in Excel/LibreOffice if you like.
 
 ### 3. Run the analysis
 ```
-python main.py --abs abs.csv --meta meta-abs.csv
+python main.py --abs abs.csv --meta meta-abs.csv --summary summary.csv
 ```
 
 You should see:
 
 - Summary statistics and fitted parameters printed to the terminal
+- A CSV table (`summary.csv`) containing the processed data structure.
 - A PNG figure saved as:
 
 ```
