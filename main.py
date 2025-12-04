@@ -155,21 +155,34 @@ def load_plate_with_headers(filename: Path | str, value_name: str) -> pd.DataFra
 def parse_condition_type(val: object) -> Optional[float | str]:
     """
     Parse a condition string into:
-      - 'Blank'
-      - 'Control'
-      - float dose in µM
+      - 'Blank' (if 'Blank' is in the string)
+      - 'Control' (if 'NegControl' is in the string)
+      - float dose (supports '10uM' format OR raw numbers like '1.39')
       - None if not recognized
     """
-    s = str(val)
+    # Convert to string and strip whitespace/NaNs
+    s = str(val).strip()
+    if s.lower() == "nan" or s == "":
+        return None
 
+    # 1. Check for Controls
+    # Matches 'Blank', 'BlankControl0001', etc.
     if "Blank" in s:
         return "Blank"
+    # Matches 'NegControl', 'NegControl0001', etc.
     if "NegControl" in s:
         return "Control"
 
+    # 2. Check for "uM" format (Old format)
     match = re.search(r"(\d+)uM", s)
     if match:
         return float(match.group(1))
+
+    # 3. Check for raw numbers (New format)
+    try:
+        return float(s)
+    except ValueError:
+        pass
 
     return None
 
